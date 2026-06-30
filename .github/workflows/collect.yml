@@ -93,6 +93,8 @@ jobs:
                   if vid_id:
                       video_ids.append(vid_id)
 
+              print(f"  flat-playlist 결과: {len(video_ids)}개 ID 수집", flush=True)
+
               source_entry = {"source": src, "videos": []}
               for vid_id in video_ids:
                   url = f"https://www.youtube.com/watch?v={vid_id}"
@@ -104,14 +106,16 @@ jobs:
                       if ml.strip().startswith('{'):
                           try: meta = json.loads(ml); break
                           except: pass
-                  if not meta: continue
-
-                  raw_date = meta.get('upload_date','')
-                  if raw_date != target_compact:
-                      print(f"  [스킵] {raw_date} {meta.get('title','')[:30]}", flush=True)
+                  if not meta:
+                      print(f"  [오류] 메타데이터 없음: {vid_id}", flush=True)
                       continue
 
-                  print(f"  [수집] {url} — {meta.get('title','')[:40]}", flush=True)
+                  raw_date = meta.get('upload_date','')
+                  print(f"  [날짜] {raw_date} — {meta.get('title','')[:40]}", flush=True)
+                  if raw_date != target_compact:
+                      continue
+
+                  print(f"  [수집] {url}", flush=True)
 
                   sub_lang, subtitle = None, None
                   with tempfile.TemporaryDirectory() as tmp:
