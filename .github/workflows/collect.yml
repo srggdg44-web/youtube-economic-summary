@@ -81,20 +81,23 @@ jobs:
               if r.returncode != 0 and r.stderr.strip():
                   print(f"  [오류] {r.stderr.strip()[:200]}", flush=True)
 
-              source_entry = {"source": src, "videos": []}
+              # flat-playlist에서 video ID 목록 수집 (upload_date는 신뢰하지 않음)
+              video_ids = []
               for line in r.stdout.splitlines():
                   if not line.strip(): continue
                   try:
                       entry = json.loads(line)
                   except:
                       continue
-                  if entry.get('upload_date') != target_compact:
-                      continue
                   vid_id = entry.get('id','')
-                  if not vid_id: continue
-                  url = f"https://www.youtube.com/watch?v={vid_id}"
-                  print(f"  [수집] {url}", flush=True)
+                  if vid_id:
+                      video_ids.append(vid_id)
 
+              source_entry = {"source": src, "videos": []}
+              for vid_id in video_ids:
+                  url = f"https://www.youtube.com/watch?v={vid_id}"
+
+                  # 전체 메타데이터로 upload_date 확인 (신뢰할 수 있는 날짜)
                   meta_r = run(['yt-dlp','--dump-json','--skip-download','--no-warnings','--quiet', url])
                   meta = None
                   for ml in meta_r.stdout.splitlines():
@@ -102,6 +105,13 @@ jobs:
                           try: meta = json.loads(ml); break
                           except: pass
                   if not meta: continue
+
+                  raw_date = meta.get('upload_date','')
+                  if raw_date != target_compact:
+                      print(f"  [스킵] {raw_date} {meta.get('title','')[:30]}", flush=True)
+                      continue
+
+                  print(f"  [수집] {url} — {meta.get('title','')[:40]}", flush=True)
 
                   sub_lang, subtitle = None, None
                   with tempfile.TemporaryDirectory() as tmp:
