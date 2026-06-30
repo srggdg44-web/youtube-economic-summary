@@ -1,0 +1,10 @@
+# 채널 URL (채널의 최신 영상들)
+https://www.youtube.com/@sbs_explained
+https://www.youtube.com/@moneyinside7
+https://www.youtube.com/@머니올라
+
+# 직접 영상 URL
+# https://www.youtube.com/watch?v=YK764z6wBtA
+
+# 키워드 검색 — ytsearchN:키워드 (N = 가져올 영상 수)
+ytsearch5:오건영

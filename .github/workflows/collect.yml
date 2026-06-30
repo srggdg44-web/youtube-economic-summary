@@ -1,0 +1,155 @@
+name: YouTube 경제 영상 수집
+
+on:
+  schedule:
+    - cron: '50 23 * * *'  # 매일 08:50 KST (= 23:50 UTC 전날)
+  workflow_dispatch:        # 수동 실행 허용
+
+permissions:
+  contents: write
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 리포지토리 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Python 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: yt-dlp 설치
+        run: pip install -q yt-dlp
+
+      - name: 어제 날짜 계산
+        id: date
+        run: |
+          echo "date=$(date -d 'yesterday' +%Y-%m-%d)" >> $GITHUB_OUTPUT
+          echo "date_compact=$(date -d 'yesterday' +%Y%m%d)" >> $GITHUB_OUTPUT
+
+      - name: 영상 수집 스크립트 실행
+        id: collect
+        run: |
+          TARGET_DATE="${{ steps.date.outputs.date }}"
+          TARGET_COMPACT="${{ steps.date.outputs.date_compact }}"
+          OUTPUT_DIR="output/${TARGET_DATE}"
+          mkdir -p "$OUTPUT_DIR"
+
+          python3 - <<'PYEOF'
+          import json, subprocess, re, sys, os, tempfile
+          from datetime import datetime
+
+          target_date = os.environ['TARGET_DATE']
+          target_compact = os.environ['TARGET_COMPACT']
+          output_dir = os.environ['OUTPUT_DIR']
+
+          CHANNELS = [
+              "https://www.youtube.com/@sbs_explained",
+              "https://www.youtube.com/@moneyinside7",
+              "https://www.youtube.com/@머니올라",
+              "ytsearch5:오건영",
+          ]
+
+          def run(cmd):
+              return subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace')
+
+          def clean_vtt(text):
+              seen, lines = set(), []
+              for line in text.splitlines():
+                  if not line.strip() or re.match(r'^\d{2}:\d{2}', line) or line.startswith(('WEBVTT','Kind:','Language:')):
+                      continue
+                  clean = re.sub(r'<\d{2}:\d{2}:\d{2}\.\d{3}>|</?c>|</?[a-z]+>', '', line)
+                  clean = clean.replace('&gt;','>').replace('&lt;','<').replace('&amp;','&').strip()
+                  if clean and clean not in seen:
+                      seen.add(clean)
+                      lines.append(clean)
+              return '\n'.join(lines)
+
+          all_results = {
+              "target_date": target_date,
+              "collected_at": datetime.now().isoformat(timespec='seconds'),
+              "sources": []
+          }
+          total = 0
+
+          for src in CHANNELS:
+              print(f"[스캔] {src}", flush=True)
+              r = run(['yt-dlp','--flat-playlist','--dump-json','--playlist-end','20','--no-warnings','--quiet', src])
+              if r.returncode != 0 and r.stderr.strip():
+                  print(f"  [오류] {r.stderr.strip()[:200]}", flush=True)
+
+              source_entry = {"source": src, "videos": []}
+              for line in r.stdout.splitlines():
+                  if not line.strip(): continue
+                  try:
+                      entry = json.loads(line)
+                  except:
+                      continue
+                  if entry.get('upload_date') != target_compact:
+                      continue
+                  vid_id = entry.get('id','')
+                  if not vid_id: continue
+                  url = f"https://www.youtube.com/watch?v={vid_id}"
+                  print(f"  [수집] {url}", flush=True)
+
+                  meta_r = run(['yt-dlp','--dump-json','--skip-download','--no-warnings','--quiet', url])
+                  meta = None
+                  for ml in meta_r.stdout.splitlines():
+                      if ml.strip().startswith('{'):
+                          try: meta = json.loads(ml); break
+                          except: pass
+                  if not meta: continue
+
+                  sub_lang, subtitle = None, None
+                  with tempfile.TemporaryDirectory() as tmp:
+                      run(['yt-dlp','--skip-download','--write-auto-subs','--write-subs',
+                           '--sub-langs','ko,en','--sub-format','vtt',
+                           '--no-warnings','--quiet', '-o', f'{tmp}/%(id)s', url])
+                      for lang in ('ko','ko-orig','en'):
+                          p = f'{tmp}/{vid_id}.{lang}.vtt'
+                          if os.path.exists(p):
+                              sub_lang = 'ko' if 'ko' in lang else 'en'
+                              subtitle = clean_vtt(open(p, encoding='utf-8').read())
+                              break
+
+                  source_entry['videos'].append({
+                      'title':         meta.get('title'),
+                      'channel':       meta.get('channel') or meta.get('uploader'),
+                      'view_count':    meta.get('view_count'),
+                      'duration':      meta.get('duration'),
+                      'upload_date':   target_date,
+                      'url':           meta.get('webpage_url') or url,
+                      'subtitle_lang': sub_lang,
+                      'subtitle':      subtitle,
+                  })
+                  total += 1
+
+              if source_entry['videos']:
+                  all_results['sources'].append(source_entry)
+                  print(f"  → {len(source_entry['videos'])}개 수집\n", flush=True)
+              else:
+                  print(f"  → 업로드 없음\n", flush=True)
+
+          out_path = f"{output_dir}/collected.json"
+          with open(out_path, 'w', encoding='utf-8') as f:
+              json.dump(all_results, f, ensure_ascii=False, indent=2)
+
+          print(f"\n완료: 총 {total}개 영상 → {out_path}")
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as fh:
+              fh.write(f"total={total}\n")
+          PYEOF
+        env:
+          TARGET_DATE: ${{ steps.date.outputs.date }}
+          TARGET_COMPACT: ${{ steps.date.outputs.date_compact }}
+          OUTPUT_DIR: output/${{ steps.date.outputs.date }}
+
+      - name: 결과 커밋 및 푸시
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add output/
+          git commit -m "수집: ${{ steps.date.outputs.date }} (${{ steps.collect.outputs.total }}개)" || echo "변경 없음"
+          git push
